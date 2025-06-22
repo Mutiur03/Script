@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Codeforces Submission Ratings Filter + Toggles + Problem Status
+// @name         Codeforces Submission Ratings Filter + Toggles + Contest Status
 // @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  Show problem ratings, filter submissions by rating, and show problem status per user in a new column after Verdict. Gym support included.
+// @version      1.1
+// @description  Show verdicts only for contest problems (with "Unattempted" if not tried). Gym/etc show blank status. Includes rating filter UI.
 // @author       Mutiur
 // @match        https://codeforces.com/submissions/*
 // @grant        GM_addStyle
@@ -27,13 +27,11 @@
   const handle = document
     .querySelector('.lang-chooser a[href^="/profile/"]')
     ?.textContent.trim();
-  console.log("Codeforces Handle:", handle);
 
   const getRatings = async () => {
     const res = await fetch("https://codeforces.com/api/problemset.problems");
     const data = await res.json();
-    if (data.status !== "OK")
-      throw new Error("Failed to fetch problem ratings");
+    if (data.status !== "OK") throw new Error("Failed to fetch problem ratings");
     const map = {};
     for (const p of data.result.problems)
       if (p.rating) map[`${p.contestId}-${p.index}`] = p.rating;
@@ -45,8 +43,7 @@
       `https://codeforces.com/api/user.status?handle=${handle}&from=1&count=1000000`
     );
     const data = await res.json();
-    if (data.status !== "OK")
-      throw new Error("Failed to fetch user submissions");
+    if (data.status !== "OK") throw new Error("Failed to fetch user submissions");
 
     const statusMap = {};
     for (const sub of data.result) {
@@ -89,28 +86,24 @@
       const verdictTd = row.querySelector(`td:nth-child(${verdictIndex + 1})`);
       if (!link || !verdictTd) continue;
 
-      const match = link.href.match(/(?:contest|gym)\/(\d+)\/problem\/(\w+)/);
-      if (!match) {
-        console.warn("Skipping row, link did not match expected format:", link.href);
-        continue;
-      }
+      const contestMatch = link.href.match(/\/contest\/(\d+)\/problem\/(\w+)/);
+      const generalMatch = link.href.match(/\/(?:contest|gym|edu|problemset|acmsguru)\/(\d+)\/problem\/(\w+)/);
 
-      const key = `${match[1]}-${match[2]}`;
-      const rating = ratings[key];
+      let key, rating;
       const span = document.createElement("span");
       span.className = "problem-rating";
 
-      if (rating) {
-        span.textContent = ` (Rating: ${rating})`;
-        row.dataset.rating = rating;
-      } else if (link.href.includes("/gym/")) {
-        span.textContent = ` (Gym)`;
-        span.title = "Unrated Gym problem";
-        row.dataset.rating = "";
+      if (generalMatch) {
+        key = `${generalMatch[1]}-${generalMatch[2]}`;
+        rating = ratings[key];
+        if (rating) {
+          span.textContent = ` (Rating: ${rating})`;
+          row.dataset.rating = rating;
+        } else {
+          row.dataset.rating = "";
+        }
+        link.parentNode.appendChild(span);
       }
-      link.parentNode.appendChild(span);
-
-      const statusText = statuses[key] || "";
 
       let statusTd = row.querySelector(".problem-status");
       if (!statusTd) {
@@ -119,15 +112,25 @@
         verdictTd.insertAdjacentElement("afterend", statusTd);
       }
 
-      const prettyVerdict = (verdict) =>
-        verdict
-          .replace(/_/g, " ")
-          .toLowerCase()
-          .replace(/(^|\s)\S/g, (l) => l.toUpperCase());
-
-      statusTd.textContent = prettyVerdict(statusText);
-      statusTd.className = "problem-status";
-      statusTd.classList.add(`verdict-${statusText}`);
+      if (contestMatch) {
+        const contestKey = `${contestMatch[1]}-${contestMatch[2]}`;
+        const rawStatus = statuses[contestKey];
+const statusText = rawStatus
+  ? rawStatus === "OK"&& "AC"
+    || rawStatus === "WRONG_ANSWER"&& "WA"
+    || rawStatus === "TIME_LIMIT_EXCEEDED" && "TLE"
+    || rawStatus === "COMPILATION_ERROR" && "CE"
+    || rawStatus === "MEMORY_LIMIT_EXCEEDED"&& "MLE"
+    : "Unattempted";
+        const prettyVerdict = (verdict) =>
+          verdict
+            .replace(/_/g, " ")
+            .replace(/(^|\s)\S/g, (l) => l.toUpperCase());
+        statusTd.textContent = prettyVerdict(statusText);
+        statusTd.classList.add(`verdict-${rawStatus || "Unattempted"}`);
+      } else {
+        statusTd.textContent = "";
+      }
     }
   };
 
@@ -188,10 +191,6 @@
           row.style.display = "";
           return;
         }
-        if (isNaN(r) && isNaN(min) && isNaN(max)) {
-          row.style.display = "";
-          return;
-        }
         row.style.display = r >= min && r <= max ? "" : "none";
       });
   };
@@ -226,7 +225,7 @@
   .verdict-RUNTIME_ERROR { color: crimson; }
   .verdict-PRESENTATION_ERROR { color: darkorange; }
   .verdict-IDLENESS_LIMIT_EXCEEDED { color: darkblue; }
-  .verdict-NO_VERDICT, .verdict-FAILED { color: darkred; }
+  // .verdict-NO_VERDICT, .verdict-FAILED, .verdict-Unattempted { color: darkred; }
 `);
 
   async function waitForTable() {
